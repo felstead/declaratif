@@ -32,20 +32,18 @@ impl<V> DisplayState<V> {
     }
 }
 
-type ProgressBarUpdater<V> = Box<dyn Fn(&V) -> DisplayState<ProgressBarState>>;
-pub struct ProgressBarBindable<V> {
-    progress_bar: ProgressBar,
-    updater: Option<ProgressBarUpdater<V>>,
-    static_prefix: Option<String>,
-    static_message: Option<String>,
-    finish_style: Option<ProgressStyle>,
-}
+// Helpers
 
 /// Creates a new ProgressBarBindable with the passed indicatif template.
 /// Will panic if the template is invalid.
-pub fn styled<V>(template: &str) -> ProgressBarBindable<V> {
+pub fn from_template_str<V>(template: &str) -> ProgressBarBindable<V> {
     let progress_bar =
         ProgressBar::no_length().with_style(ProgressStyle::with_template(template).unwrap());
+    ProgressBarBindable::new(progress_bar)
+}
+
+pub fn styled<V>(style: ProgressStyle) -> ProgressBarBindable<V> {
+    let progress_bar = ProgressBar::no_length().with_style(style);
     ProgressBarBindable::new(progress_bar)
 }
 
@@ -53,15 +51,15 @@ pub fn spacer<V>() -> ProgressBarBindable<V> {
     message_static("".to_string())
 }
 
-pub fn message_static<V>(msg: String) -> ProgressBarBindable<V> {
+pub fn message_static<V>(msg: impl Into<String>) -> ProgressBarBindable<V> {
     let progress_bar =
-        ProgressBar::new(0).with_style(ProgressStyle::with_template("{msg}").unwrap());
+        ProgressBar::no_length().with_style(ProgressStyle::with_template("{msg}").unwrap());
 
     ProgressBarBindable {
         progress_bar,
         updater: None,
         static_prefix: None,
-        static_message: Some(msg),
+        static_message: Some(msg.into()),
         finish_style: None,
     }
 }
@@ -70,7 +68,7 @@ pub fn message<V>(
     updater: impl Fn(&V) -> DisplayState<String> + 'static,
 ) -> ProgressBarBindable<V> {
     let progress_bar =
-        ProgressBar::new(0).with_style(ProgressStyle::with_template("{msg}").unwrap());
+        ProgressBar::no_length().with_style(ProgressStyle::with_template("{msg}").unwrap());
 
     ProgressBarBindable {
         progress_bar,
@@ -101,7 +99,19 @@ pub fn progress_bar_default<V>(
     }
 }
 
+type ProgressBarUpdater<V> = Box<dyn Fn(&V) -> DisplayState<ProgressBarState>>;
+pub struct ProgressBarBindable<V> {
+    progress_bar: ProgressBar,
+    updater: Option<ProgressBarUpdater<V>>,
+    static_prefix: Option<String>,
+    static_message: Option<String>,
+    finish_style: Option<ProgressStyle>,
+}
+
+
 impl<V> ProgressBarBindable<V> {
+    // == Constructors and modifiers
+
     pub fn new(progress_bar: ProgressBar) -> Self {
         ProgressBarBindable {
             progress_bar,
@@ -147,7 +157,12 @@ impl<V> ProgressBarBindable<V> {
         self
     }
 
-    pub fn with_prefix(mut self, prefix: String) -> Self {
+    pub fn with_static_message(mut self, message: impl Into<String>) -> Self {
+        self.static_message = Some(message.into());
+        self
+    }
+
+    pub fn with_static_prefix(mut self, prefix: String) -> Self {
         self.static_prefix = Some(prefix);
         self
     }
@@ -162,22 +177,34 @@ impl<V> ProgressBarBindable<V> {
         self
     }
 
-    pub fn tick(&self, model: &V) {
-        if self.progress_bar.is_finished() {
-            return;
-        }
+    // Used by the MultiProgressWrapper to insert the bar
+    pub(crate) fn get_progress_bar(&self) -> &ProgressBar {
+        &self.progress_bar
+    }
 
-        let progress_state = self
-            .updater
-            .as_ref()
-            .map(|updater| updater(model))
-            .unwrap_or_else(|| DisplayState::Finished(ProgressBarState::default()));
+    /// This is used specifically in the circumstances where a parent container might be hidden, so we
+    /// force this progress bar to hide itself.
+    pub fn tick_with_display_override(&self, model: &V, can_display: bool) {
+        let progress_state = if can_display {
+            self
+                .updater
+                .as_ref()
+                .map(|updater| updater(model))
+                .unwrap_or_else(|| DisplayState::Finished(ProgressBarState::default()))
+        } else {
+            DisplayState::FinishedAndHidden
+        };
 
         match &progress_state {
             DisplayState::NotStarted => {
                 // No-op
             }
             DisplayState::Active(progress) | DisplayState::Finished(progress) => {
+                // Reactivate the progress bar if it was finished
+                if self.progress_bar.is_finished() {
+                    self.progress_bar.reset();
+                }
+
                 if let Some(msg) = progress.message.as_ref().or(self.static_message.as_ref()) {
                     self.progress_bar.set_message(msg.clone());
                 } else {
@@ -198,14 +225,21 @@ impl<V> ProgressBarBindable<V> {
                     self.progress_bar.set_position(0);
                 }
 
-                if progress_state.is_finished() {
+                self.progress_bar.tick();
+                if progress_state.is_finished() && !self.progress_bar.is_finished() {
                     self.progress_bar.finish();
                 }
             }
             DisplayState::FinishedAndHidden => {
-                self.progress_bar.finish_and_clear();
+                if !self.progress_bar.is_finished() {
+                    self.progress_bar.finish_and_clear();
+                }
             }
         }
+    }
+
+    pub fn tick(&self, model: &V) {
+        self.tick_with_display_override(model, false);
     }
 }
 
@@ -323,7 +357,7 @@ mod tests {
 
         let message_implicit_bind = message(TestViewModel::get_message);
         let message_explicit_bind = ProgressBarBindable::new(
-            ProgressBar::new(0).with_style(ProgressStyle::with_template("{msg}").unwrap()),
+            ProgressBar::no_length().with_style(ProgressStyle::with_template("{msg}").unwrap()),
         )
         .bind_message(TestViewModel::get_message);
 
