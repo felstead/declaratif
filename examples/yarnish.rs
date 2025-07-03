@@ -1,4 +1,4 @@
-use declaratif::*;
+use declaratif::multiprogress_bindable::*;
 use std::time::{Instant, Duration};
 use indicatif::*;
 
@@ -50,7 +50,7 @@ impl TestModel {
 
 fn main() {
     
-    let mpw = MultiProgressWrapper::<TestModel>::new(MultiProgress::new());
+    let mpw = MultiProgressWrapper::new(MultiProgress::new());
 
     mpw.insert_absolute(0, message(TestModel::overall_message_disappearing));
     mpw.insert_absolute(1, message(TestModel::message_1));
@@ -61,7 +61,7 @@ fn main() {
     let mut vm = TestModel(0.0);
     loop {
         vm.0 = start.elapsed().as_secs_f32();
-        mpw.tick(&vm);
+        mpw.manually_tick_all();
 
         if vm.done() {
             break;

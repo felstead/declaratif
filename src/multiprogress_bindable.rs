@@ -1,13 +1,12 @@
-use crate::progress_bar_bindable::ProgressBarBindable;
-use indicatif::MultiProgress;
+use indicatif::{MultiProgress, ProgressBar};
 use std::{collections::BTreeMap, sync::RwLock};
 
-pub struct MultiProgressWrapper<V> {
+pub struct MultiProgressWrapper {
     root: MultiProgress,
-    ordered_bars: RwLock<BTreeMap<usize, ProgressBarBindable<V>>>,
+    ordered_bars: RwLock<BTreeMap<usize, ProgressBar>>,
 }
 
-impl<V> MultiProgressWrapper<V> {
+impl MultiProgressWrapper {
     pub fn new(root: MultiProgress) -> Self {
         Self {
             root,
@@ -15,15 +14,15 @@ impl<V> MultiProgressWrapper<V> {
         }
     }
 
-    pub fn insert_absolute(&self, index_abs: usize, bar: ProgressBarBindable<V>) {
+    pub fn insert_absolute(&self, index_abs: usize, bar: ProgressBar) {
         let mut ordered_bars = self.ordered_bars.write().unwrap();
         // Find the largest element less than index_abs
         let mut successor_range = ordered_bars.range(index_abs + 1..);
-        if let Some((_index, successor)) = successor_range.next() {
-            self.root.insert_before(successor.get_progress_bar(), bar.get_progress_bar().clone())
+        let bar = if let Some((_index, successor)) = successor_range.next() {
+            self.root.insert_before(successor, bar)
         } else {
             // There is no successor, insert at the end
-            self.root.add(bar.get_progress_bar().clone())
+            self.root.add(bar)
         };
 
         ordered_bars.insert(index_abs, bar);
@@ -33,20 +32,21 @@ impl<V> MultiProgressWrapper<V> {
         let mut ordered_bars = self.ordered_bars.write().unwrap();
         if let Some(bar) = ordered_bars.remove(&bar_index) {
             // Remove the bar from the MultiProgress
-            self.root.remove(bar.get_progress_bar());
+            self.root.remove(&bar);
         }
     }
 
-    pub fn tick(&self, model: &V) {
+    /// This is just here for convenience, but generally the ProgressBarBindable will tick itself
+    pub fn manually_tick_all(&self) {
         let ordered_bars = self.ordered_bars.read().unwrap();
         for (_index, bar) in ordered_bars.iter() {
-            bar.tick(model);
+            bar.tick();
         }
     }
 }
 
-impl<V> Into<MultiProgressWrapper<V>> for MultiProgress {
-    fn into(self) -> MultiProgressWrapper<V> {
+impl Into<MultiProgressWrapper> for MultiProgress {
+    fn into(self) -> MultiProgressWrapper {
         MultiProgressWrapper {
             root: self,
             ordered_bars: RwLock::new(BTreeMap::new()),
@@ -58,31 +58,28 @@ impl<V> Into<MultiProgressWrapper<V>> for MultiProgress {
 mod tests {
     use super::*;
     use indicatif::ProgressDrawTarget;
-    use crate::progress_bar_bindable::message_static;
 
     #[test]
     fn test_multiprogress_ordering() {
-        type PBB = ProgressBarBindable<()>;
-
         let root = MultiProgress::with_draw_target(ProgressDrawTarget::hidden());
-        let wrapper: MultiProgressWrapper<()> = root.into();
+        let wrapper: MultiProgressWrapper = root.into();
 
         // Insert in random order
-        wrapper.insert_absolute(30, message_static("Bar 30"));
-        wrapper.insert_absolute(1, message_static("Bar 1"));
-        wrapper.insert_absolute(20, message_static("Bar 20"));
-        wrapper.insert_absolute(10, message_static("Bar 10"));
+        wrapper.insert_absolute(30, ProgressBar::hidden().with_message("Bar 30"));
+        wrapper.insert_absolute(1, ProgressBar::hidden().with_message("Bar 1"));
+        wrapper.insert_absolute(20, ProgressBar::hidden().with_message("Bar 20"));
+        wrapper.insert_absolute(10, ProgressBar::hidden().with_message("Bar 10"));
 
-        let get_as_vec = |ordered_bars: &RwLock<BTreeMap<usize, PBB>>| {
+        let get_as_vec = |ordered_bars: &RwLock<BTreeMap<usize, ProgressBar>>| {
             ordered_bars
                 .read()
                 .unwrap()
                 .iter()
-                .map(|(i, bar)| (*i, bar.get_progress_bar().message()))
+                .map(|(i, bar)| (*i, bar.message()))
                 .collect::<Vec<_>>()
         };
 
-        wrapper.tick(&());
+        wrapper.manually_tick_all();
         let index_and_messages = get_as_vec(&wrapper.ordered_bars);
         assert_eq!(
             index_and_messages,
@@ -99,10 +96,10 @@ mod tests {
         wrapper.remove_at_index(30);
 
         // Add a new bars at 15 and 0
-        wrapper.insert_absolute(15, message_static("Bar 15"));
-        wrapper.insert_absolute(0, message_static("Bar 0"));
+        wrapper.insert_absolute(15, ProgressBar::hidden().with_message("Bar 15"));
+        wrapper.insert_absolute(0, ProgressBar::hidden().with_message("Bar 0"));
 
-        wrapper.tick(&());
+        wrapper.manually_tick_all();
         let index_and_messages = get_as_vec(&wrapper.ordered_bars);
         assert_eq!(
             index_and_messages,

@@ -2,26 +2,28 @@ use crate::{progress_bar_bindable::ProgressBarBindable, multiprogress_bindable::
 use indicatif::MultiProgress;
 
 pub struct ProgressBarTree<V> {
-    multiprogress: MultiProgressWrapper<V>,
+    multiprogress: MultiProgressWrapper,
     root: ProgressBarTreeContainer<V>,
 }
 
 impl<V> ProgressBarTree<V> {
-    fn new(multiprogress: MultiProgress, children: Vec<ProgressBarTreeContainer<V>>) -> Self {
-        let multiprogress= MultiProgressWrapper::<V>::new(multiprogress);
+    pub fn new(multiprogress: MultiProgress, children: Vec<ProgressBarTreeContainer<V>>) -> Self {
+        let wrapper : MultiProgressWrapper = multiprogress.into();
 
-        let root = ProgressBarTreeContainer::group(children);
-        let mut index = 0;
+        //let root = ProgressBarTreeContainer::group(children);
 
-        // TODO TOMORROW: Okay, so we kind of expect the MultiProgressWrapper to take ownership of the bars
-        // This means we need to take each of the children and move it into the MultiProgressWrapper?
-        // Or maybe do something else.  Brain done for now.
-        
+        for child in children.into_iter() {
 
+        }
 
-        todo!()
+        // Add each bar to the wrapper in order
+        Self {
+            multiprogress: wrapper,
+            root,
+        }
     }
 }
+
 
 
 
@@ -55,15 +57,19 @@ impl<V> ProgressBarTreeContainer<V> {
         }
     }
 
-    fn visit(&self, index: &mut usize, visitor: impl Fn(&ProgressBarBindable<V>)) {
+    pub fn tick(&self, model: &V) {
+        self.tick_inner(model, true);
+    }
+
+    fn tick_inner(&self, model: &V, parent_can_display: bool) {
+        let parent_can_display = parent_can_display && self.can_display(model);
         match self {
-            ProgressBarTreeContainer::Leaf(bar, _) => {
-                visitor(bar);
-                *index += 1;
+            ProgressBarTreeContainer::Leaf(bar, display_condition) => {                
+                bar.tick_with_display_override(model, parent_can_display);
             },
-            ProgressBarTreeContainer::Node(children, _) => {
+            ProgressBarTreeContainer::Node(children, display_condition) => {
                 for child in children {
-                    child.visit(index, &visitor);
+                    child.tick_inner(model, parent_can_display);
                 }
             }
         }
