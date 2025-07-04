@@ -1,10 +1,27 @@
+use crate::multiprogress_bindable::MultiProgressWrapper;
 use indicatif::*;
+use std::sync::RwLock;
 
 #[derive(Default)]
 pub struct ProgressBarState {
     message: Option<String>,
     prefix: Option<String>,
     position_and_len: Option<(u64, u64)>,
+}
+
+impl ProgressBarState {
+    pub fn new(
+        message: Option<String>,
+        prefix: Option<String>,
+        position: u64,
+        length: u64,
+    ) -> Self {
+        ProgressBarState {
+            message,
+            prefix,
+            position_and_len: Some((position, length)),
+        }
+    }
 }
 
 pub enum DisplayState<V> {
@@ -32,93 +49,132 @@ impl<V> DisplayState<V> {
     }
 }
 
-// Helpers
-
-/// Creates a new ProgressBarBindable with the passed indicatif template.
-/// Will panic if the template is invalid.
-pub fn from_template_str<V>(template: &str) -> ProgressBarBindable<V> {
-    let progress_bar =
-        ProgressBar::no_length().with_style(ProgressStyle::with_template(template).unwrap());
-    ProgressBarBindable::new(progress_bar)
+enum ProgressBarWrapper {
+    Unbound,
+    Standalone(RwLock<Option<ProgressBar>>),
+    MultiProgress(MultiProgressWrapper, usize),
 }
 
-pub fn styled<V>(style: ProgressStyle) -> ProgressBarBindable<V> {
-    let progress_bar = ProgressBar::no_length().with_style(style);
-    ProgressBarBindable::new(progress_bar)
-}
-
-pub fn spacer<V>() -> ProgressBarBindable<V> {
-    message_static("".to_string())
-}
-
-pub fn message_static<V>(msg: impl Into<String>) -> ProgressBarBindable<V> {
-    let progress_bar =
-        ProgressBar::no_length().with_style(ProgressStyle::with_template("{msg}").unwrap());
-
-    ProgressBarBindable {
-        progress_bar,
-        updater: None,
-        static_prefix: None,
-        static_message: Some(msg.into()),
-        finish_style: None,
+impl ProgressBarWrapper {
+    fn is_created(&self) -> bool {
+        match self {
+            Self::Unbound => false,
+            Self::Standalone(bar_lock) => bar_lock.read().unwrap().is_some(),
+            Self::MultiProgress(wrapper, index) => wrapper.get_bar_at_index(*index).is_some(),
+        }
     }
-}
 
-pub fn message<V>(
-    updater: impl Fn(&V) -> DisplayState<String> + 'static,
-) -> ProgressBarBindable<V> {
-    let progress_bar =
-        ProgressBar::no_length().with_style(ProgressStyle::with_template("{msg}").unwrap());
-
-    ProgressBarBindable {
-        progress_bar,
-        updater: Some(Box::new(move |v| {
-            let msg = updater(v);
-            msg.map(|msg| ProgressBarState {
-                message: Some(msg),
-                prefix: None,
-                position_and_len: None,
-            })
-        })),
-        static_prefix: None,
-        static_message: None,
-        finish_style: None,
+    // Helper for testing purposes
+    #[cfg(test)]
+    fn is_finished(&self) -> bool {
+        match self {
+            Self::Unbound => true,
+            Self::Standalone(bar_lock) => bar_lock
+                .read()
+                .unwrap()
+                .as_ref()
+                .map_or(true, |bar| bar.is_finished()),
+            Self::MultiProgress(wrapper, index) => wrapper
+                .get_bar_at_index(*index)
+                .map_or(true, |bar| bar.is_finished()),
+        }
     }
-}
 
-pub fn progress_bar_default<V>(
-    updater: impl Fn(&V) -> DisplayState<ProgressBarState> + 'static,
-) -> ProgressBarBindable<V> {
-    let progress_bar = ProgressBar::no_length();
-    ProgressBarBindable::<V> {
-        progress_bar,
-        updater: Some(Box::new(updater)),
-        static_prefix: None,
-        static_message: None,
-        finish_style: None,
+    fn remove(&self) {
+        match self {
+            Self::Unbound => {}
+            Self::Standalone(bar_lock) => {
+                let mut bar_option = bar_lock.write().unwrap();
+                if let Some(progress_bar) = bar_option.take() {
+                    progress_bar.finish_and_clear();
+                }
+            }
+            Self::MultiProgress(wrapper, index) => {
+                wrapper.remove_at_index(*index);
+            }
+        }
+    }
+
+    fn get_or_create(&self) -> Option<ProgressBar> {
+        match self {
+            Self::Unbound => None,
+            Self::Standalone(lock) => {
+                let mut bar_option = lock.write().unwrap();
+                if let Some(progress_bar) = bar_option.as_ref() {
+                    Some(progress_bar.clone())
+                } else {
+                    *bar_option = Some(ProgressBar::no_length());
+                    bar_option.clone()
+                }
+            }
+            Self::MultiProgress(wrapper, index) => {
+                if let Some(bar) = wrapper.get_bar_at_index(*index) {
+                    Some(bar)
+                } else {
+                    let bar = ProgressBar::no_length();
+                    wrapper.insert_absolute(*index, bar.clone());
+                    Some(bar)
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn get_inner_progress_bar(&self) -> Option<ProgressBar> {
+        match self {
+            Self::Unbound => None,
+            Self::Standalone(lock) => lock.read().unwrap().clone(),
+            Self::MultiProgress(wrapper, index) => wrapper.get_bar_at_index(*index),
+        }
     }
 }
 
 type ProgressBarUpdater<V> = Box<dyn Fn(&V) -> DisplayState<ProgressBarState>>;
 pub struct ProgressBarBindable<V> {
-    progress_bar: ProgressBar,
-    updater: Option<ProgressBarUpdater<V>>,
+    progress_bar: ProgressBarWrapper,
+    base_style: ProgressStyle,
+    finish_style: Option<ProgressStyle>,
     static_prefix: Option<String>,
     static_message: Option<String>,
-    finish_style: Option<ProgressStyle>,
+    updater: Option<ProgressBarUpdater<V>>,
 }
-
 
 impl<V> ProgressBarBindable<V> {
     // == Constructors and modifiers
-
-    pub fn new(progress_bar: ProgressBar) -> Self {
+    pub fn new(style: ProgressStyle) -> Self {
         ProgressBarBindable {
-            progress_bar,
-            updater: None,
+            progress_bar: ProgressBarWrapper::Unbound,
+            base_style: style,
+            finish_style: None,
             static_prefix: None,
             static_message: None,
+            updater: None,
+        }
+    }
+
+    pub fn new_standalone(style: ProgressStyle) -> Self {
+        ProgressBarBindable {
+            progress_bar: ProgressBarWrapper::Standalone(RwLock::new(None)),
+            base_style: style,
             finish_style: None,
+            static_prefix: None,
+            static_message: None,
+            updater: None,
+        }
+    }
+
+    pub fn new_multi_progress(
+        style: ProgressStyle,
+        multiprogress: MultiProgressWrapper,
+        index: usize,
+    ) -> Self {
+        ProgressBarBindable {
+            progress_bar: ProgressBarWrapper::MultiProgress(multiprogress, index),
+            base_style: style,
+            finish_style: None,
+            static_prefix: None,
+            static_message: None,
+            updater: None,
         }
     }
 
@@ -167,8 +223,8 @@ impl<V> ProgressBarBindable<V> {
         self
     }
 
-    pub fn with_style(self, style: ProgressStyle) -> Self {
-        self.progress_bar.set_style(style);
+    pub fn with_style(mut self, style: ProgressStyle) -> Self {
+        self.base_style = style;
         self
     }
 
@@ -178,16 +234,15 @@ impl<V> ProgressBarBindable<V> {
     }
 
     // Used by the MultiProgressWrapper to insert the bar
-    pub(crate) fn get_progress_bar(&self) -> &ProgressBar {
-        &self.progress_bar
+    pub(crate) fn reparent(&mut self, multiprogress: MultiProgressWrapper, index: usize) {
+        self.progress_bar = ProgressBarWrapper::MultiProgress(multiprogress, index);
     }
 
     /// This is used specifically in the circumstances where a parent container might be hidden, so we
     /// force this progress bar to hide itself.
     pub fn tick_with_display_override(&self, model: &V, can_display: bool) {
         let progress_state = if can_display {
-            self
-                .updater
+            self.updater
                 .as_ref()
                 .map(|updater| updater(model))
                 .unwrap_or_else(|| DisplayState::Finished(ProgressBarState::default()))
@@ -195,57 +250,58 @@ impl<V> ProgressBarBindable<V> {
             DisplayState::FinishedAndHidden
         };
 
+        let already_created = self.progress_bar.is_created();
         match &progress_state {
-            DisplayState::NotStarted => {
-                // No-op
+            DisplayState::NotStarted | DisplayState::FinishedAndHidden => {
+                if already_created {
+                    self.progress_bar.remove();
+                }
             }
             DisplayState::Active(progress) | DisplayState::Finished(progress) => {
-                // Reactivate the progress bar if it was finished
-                if self.progress_bar.is_finished() {
-                    self.progress_bar.reset();
-                }
+                if let Some(progress_bar) = self.progress_bar.get_or_create() {
+                    if !already_created {
+                        progress_bar.set_style(self.base_style.clone());
+                    }
 
-                if let Some(msg) = progress.message.as_ref().or(self.static_message.as_ref()) {
-                    self.progress_bar.set_message(msg.clone());
-                } else {
-                    self.progress_bar.set_message("".to_string());
-                }
+                    if let Some(msg) = progress.message.as_ref().or(self.static_message.as_ref()) {
+                        progress_bar.set_message(msg.clone());
+                    } else {
+                        progress_bar.set_message("".to_string());
+                    }
 
-                if let Some(prefix) = progress.prefix.as_ref().or(self.static_prefix.as_ref()) {
-                    self.progress_bar.set_prefix(prefix.clone());
-                } else {
-                    self.progress_bar.set_prefix("".to_string());
-                }
+                    if let Some(prefix) = progress.prefix.as_ref().or(self.static_prefix.as_ref()) {
+                        progress_bar.set_prefix(prefix.clone());
+                    } else {
+                        progress_bar.set_prefix("".to_string());
+                    }
 
-                if let Some((position, length)) = &progress.position_and_len {
-                    self.progress_bar.set_length(*length);
-                    self.progress_bar.set_position(*position);
-                } else {
-                    self.progress_bar.unset_length();
-                    self.progress_bar.set_position(0);
-                }
+                    if let Some((position, length)) = &progress.position_and_len {
+                        progress_bar.set_length(*length);
+                        progress_bar.set_position(*position);
+                    } else {
+                        progress_bar.unset_length();
+                        progress_bar.set_position(0);
+                    }
 
-                self.progress_bar.tick();
-                if progress_state.is_finished() && !self.progress_bar.is_finished() {
-                    self.progress_bar.finish();
-                }
-            }
-            DisplayState::FinishedAndHidden => {
-                if !self.progress_bar.is_finished() {
-                    self.progress_bar.finish_and_clear();
+                    progress_bar.tick();
+                    if progress_state.is_finished() {
+                        progress_bar.finish();
+                    }
                 }
             }
         }
     }
 
     pub fn tick(&self, model: &V) {
-        self.tick_with_display_override(model, false);
+        self.tick_with_display_override(model, true);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::helpers::standalone::*;
+
     #[derive(Default, Debug)]
     enum TestState {
         #[default]
@@ -342,7 +398,6 @@ mod tests {
         message.tick(&vm);
         assert_eq!(message.static_message, Some("Static Message".to_string()));
         assert_eq!(message.progress_bar.is_finished(), false);
-        assert_eq!(message.progress_bar.is_hidden(), false);
 
         vm.state = TestState::Finished;
         message.tick(&vm);
@@ -355,62 +410,54 @@ mod tests {
     fn test_message() {
         let mut vm = TestViewModel::default();
 
-        let message_implicit_bind = message(TestViewModel::get_message);
-        let message_explicit_bind = ProgressBarBindable::new(
-            ProgressBar::no_length().with_style(ProgressStyle::with_template("{msg}").unwrap()),
-        )
-        .bind_message(TestViewModel::get_message);
+        let message =
+            ProgressBarBindable::new_standalone(ProgressStyle::with_template("{msg}").unwrap())
+                .bind_message(TestViewModel::get_message);
 
-        let validate_messages = |expected: &str| {
+        let validate_message = |expected: &str| {
             assert_eq!(
-                message_implicit_bind.progress_bar.message(),
+                message
+                    .progress_bar
+                    .get_inner_progress_bar()
+                    .unwrap()
+                    .message(),
                 expected,
-                "Implicit bind expected '{}' but got '{}'",
-                expected,
-                message_implicit_bind.progress_bar.message()
-            );
-            assert_eq!(
-                message_explicit_bind.progress_bar.message(),
-                expected,
-                "Explicit bind expected '{}' but got '{}'",
-                expected,
-                message_implicit_bind.progress_bar.message()
             );
         };
 
         let validate_finished = |expected: bool| {
-            assert_eq!(message_implicit_bind.progress_bar.is_finished(), expected);
-            assert_eq!(message_explicit_bind.progress_bar.is_finished(), expected);
+            assert_eq!(
+                message
+                    .progress_bar
+                    .get_inner_progress_bar()
+                    .unwrap()
+                    .is_finished(),
+                expected
+            );
         };
 
         // Validate default state
-        validate_messages("");
-        validate_finished(false);
+        assert!(message.progress_bar.get_inner_progress_bar().is_none());
 
         // Validate explicit NotStarted state
-        message_implicit_bind.tick(&vm);
-        message_explicit_bind.tick(&vm);
+        message.tick(&vm);
         // Not started shouldn't bind the message
-        validate_messages("");
+        assert!(message.progress_bar.get_inner_progress_bar().is_none());
+
+        vm.state.next();
+        message.tick(&vm);
+        validate_message("Started");
         validate_finished(false);
 
         vm.state.next();
-        message_implicit_bind.tick(&vm);
-        message_explicit_bind.tick(&vm);
-        validate_messages("Started");
-        validate_finished(false);
-
-        vm.state.next();
-        message_implicit_bind.tick(&vm);
-        message_explicit_bind.tick(&vm);
-        validate_messages("Finished");
+        message.tick(&vm);
+        validate_message("Finished");
         validate_finished(true);
 
         // Final tick to ensure finished state
         vm.state.next();
-        message_implicit_bind.tick(&vm);
-        message_explicit_bind.tick(&vm);
-        validate_messages("Finished");
+        message.tick(&vm);
+        validate_message("Finished");
         validate_finished(true);
     }
 
@@ -420,105 +467,42 @@ mod tests {
 
         let progress = progress_bar_default(TestViewModel::get_progress);
 
-        // Ensure default and initial state are the same
-        assert!(
-            !progress.progress_bar.is_finished(),
-            "Progress bar should not be finished initially"
-        );
-        assert_eq!(
-            progress.progress_bar.length(),
-            None,
-            "Initial length should be None"
-        );
-        assert_eq!(
-            progress.progress_bar.position(),
-            0,
-            "Initial position should be 0"
-        );
-        assert_eq!(
-            progress.progress_bar.message(),
-            "",
-            "Initial message should be empty"
-        );
-        assert_eq!(
-            progress.progress_bar.prefix(),
-            "",
-            "Initial prefix should be empty"
-        );
+        let inner_bar = || progress.progress_bar.get_inner_progress_bar().unwrap();
+
+        // Ensure default and initial state are the same (not created)
+        assert!(progress.progress_bar.get_inner_progress_bar().is_none());
         progress.tick(&vm);
-        assert_eq!(
-            progress.progress_bar.length(),
-            None,
-            "Initial length should be None"
-        );
-        assert_eq!(
-            progress.progress_bar.position(),
-            0,
-            "Initial position should be 0"
-        );
-        assert_eq!(
-            progress.progress_bar.message(),
-            "",
-            "Initial message should be empty"
-        );
-        assert_eq!(
-            progress.progress_bar.prefix(),
-            "",
-            "Initial prefix should be empty"
-        );
+        assert!(progress.progress_bar.get_inner_progress_bar().is_none());
 
         vm.state.next();
         progress.tick(&vm);
         assert!(
-            !progress.progress_bar.is_finished(),
+            !inner_bar().is_finished(),
             "Started bar should not be finished"
         );
+        assert_eq!(inner_bar().length(), Some(10), "Started length should be 5");
+        assert_eq!(inner_bar().position(), 5, "Started position should be 5");
         assert_eq!(
-            progress.progress_bar.length(),
-            Some(10),
-            "Started length should be 5"
-        );
-        assert_eq!(
-            progress.progress_bar.position(),
-            5,
-            "Started position should be 5"
-        );
-        assert_eq!(
-            progress.progress_bar.message(),
+            inner_bar().message(),
             "Started",
             "Started message should be 'Started'"
         );
         assert_eq!(
-            progress.progress_bar.prefix(),
+            inner_bar().prefix(),
             "[1/3]",
             "Started prefix should be '[1/3]'"
         );
 
         vm.state.next();
         progress.tick(&vm);
-        assert!(
-            progress.progress_bar.is_finished(),
-            "Final bar should be finished"
-        );
+        assert!(inner_bar().is_finished(), "Final bar should be finished");
+        assert_eq!(inner_bar().length(), Some(10), "Final length should be 10");
+        assert_eq!(inner_bar().position(), 10, "Final position should be 10");
         assert_eq!(
-            progress.progress_bar.length(),
-            Some(10),
-            "Final length should be 10"
-        );
-        assert_eq!(
-            progress.progress_bar.position(),
-            10,
-            "Final position should be 10"
-        );
-        assert_eq!(
-            progress.progress_bar.message(),
+            inner_bar().message(),
             "Finished",
             "Final message should be 'Finished'"
         );
-        assert_eq!(
-            progress.progress_bar.prefix(),
-            "",
-            "Final prefix should be empty"
-        );
+        assert_eq!(inner_bar().prefix(), "", "Final prefix should be empty");
     }
 }

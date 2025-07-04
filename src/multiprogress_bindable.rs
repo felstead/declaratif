@@ -1,16 +1,20 @@
 use indicatif::{MultiProgress, ProgressBar};
-use std::{collections::BTreeMap, sync::RwLock};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, RwLock},
+};
 
+#[derive(Debug, Clone)]
 pub struct MultiProgressWrapper {
     root: MultiProgress,
-    ordered_bars: RwLock<BTreeMap<usize, ProgressBar>>,
+    ordered_bars: Arc<RwLock<BTreeMap<usize, ProgressBar>>>,
 }
 
 impl MultiProgressWrapper {
     pub fn new(root: MultiProgress) -> Self {
         Self {
             root,
-            ordered_bars: RwLock::new(BTreeMap::new()),
+            ordered_bars: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 
@@ -32,6 +36,7 @@ impl MultiProgressWrapper {
         let mut ordered_bars = self.ordered_bars.write().unwrap();
         if let Some(bar) = ordered_bars.remove(&bar_index) {
             // Remove the bar from the MultiProgress
+            bar.finish_and_clear();
             self.root.remove(&bar);
         }
     }
@@ -43,14 +48,16 @@ impl MultiProgressWrapper {
             bar.tick();
         }
     }
+
+    pub fn get_bar_at_index(&self, index: usize) -> Option<ProgressBar> {
+        let ordered_bars = self.ordered_bars.read().unwrap();
+        ordered_bars.get(&index).cloned()
+    }
 }
 
-impl Into<MultiProgressWrapper> for MultiProgress {
-    fn into(self) -> MultiProgressWrapper {
-        MultiProgressWrapper {
-            root: self,
-            ordered_bars: RwLock::new(BTreeMap::new()),
-        }
+impl From<MultiProgress> for MultiProgressWrapper {
+    fn from(value: MultiProgress) -> Self {
+        MultiProgressWrapper::new(value)
     }
 }
 
