@@ -2,13 +2,18 @@ use declaratif::{
     DisplayState, ProgressBarState, ProgressBarTree, helpers::tree::*, helpers::unbound::*,
 };
 use indicatif::MultiProgress;
-use std::time::{Duration, Instant};
+use std::{
+    sync::RwLock,
+    thread,
+    time::{Duration, Instant},
+};
 
-struct TestModel(f32);
+// A ViewModel must be Send + Sync to be used in a multithreaded context
+struct TestModel(RwLock<f32>);
 impl TestModel {
     const DONE: f32 = 20.0;
     fn done(&self) -> bool {
-        self.0 >= Self::DONE
+        *self.0.read().unwrap() >= Self::DONE
     }
 
     fn progress(&self) -> DisplayState<ProgressBarState> {
@@ -18,7 +23,7 @@ impl TestModel {
             DisplayState::Active(ProgressBarState::new(
                 None,
                 None,
-                (self.0 * 1000.0) as u64,
+                (*self.0.read().unwrap() * 1000.0) as u64,
                 (Self::DONE * 1000.0) as u64,
             ))
         }
@@ -28,7 +33,11 @@ impl TestModel {
         if self.done() {
             DisplayState::Finished("Done!".to_string())
         } else {
-            DisplayState::Active(format!("Elapsed time: {:.2} / {} secs", self.0, Self::DONE))
+            DisplayState::Active(format!(
+                "Elapsed time: {:.2} / {} secs",
+                *self.0.read().unwrap(),
+                Self::DONE
+            ))
         }
     }
 
@@ -38,14 +47,14 @@ impl TestModel {
         } else {
             DisplayState::Active(format!(
                 "Elapsed time: {:.2} / {} secs (will disappear)",
-                self.0,
+                *self.0.read().unwrap(),
                 Self::DONE
             ))
         }
     }
 
     fn message_1(&self) -> DisplayState<String> {
-        let elapsed_secs = self.0;
+        let elapsed_secs = *self.0.read().unwrap();
         if elapsed_secs <= 2.0 {
             DisplayState::NotStarted
         } else if elapsed_secs > 2.0 && elapsed_secs <= 10.0 {
@@ -59,7 +68,7 @@ impl TestModel {
     }
 
     fn message_2(&self) -> DisplayState<String> {
-        let elapsed_secs = self.0;
+        let elapsed_secs = *self.0.read().unwrap();
         if elapsed_secs <= 1.0 {
             DisplayState::NotStarted
         } else if (elapsed_secs > 1.0 && elapsed_secs <= 7.0)
@@ -77,6 +86,7 @@ impl TestModel {
 
 fn main() {
     let multiprogress = MultiProgress::new();
+
     let tree = ProgressBarTree::<TestModel>::new(multiprogress, vec![
         progress_bar_default(TestModel::progress).into(),
         message(TestModel::overall_message).into(),
@@ -90,7 +100,7 @@ fn main() {
             message_static("  - This is a static message in a group").into(),
             message_static("  - This is a static message as well").into(),
             spacer().into(),
-        ]).with_display_condition(Box::new(|v| v.0 > 5.0)),
+        ]).with_display_condition(Box::new(|v| *v.0.read().unwrap() > 5.0)),
         // You can convert a vec of ProgressBarBindable into a group with into()
         vec![
             message_static("== This is a static message in a group inside a group that is always visible").into(),
@@ -100,16 +110,30 @@ fn main() {
         message(TestModel::overall_message_disappearing).into(),
     ]);
 
-    let start = Instant::now();
-    let mut vm = TestModel(0.0);
-    loop {
-        vm.0 = start.elapsed().as_secs_f32();
+    let vm = TestModel(RwLock::new(0.0));
 
-        tree.tick(&vm);
-        if vm.done() {
-            break;
-        } else {
-            std::thread::sleep(Duration::from_millis(50));
+    // Test multithreading
+    thread::scope(|s| {
+        let vm_ref = &vm;
+        // Render thread
+        let render_thread = s.spawn(move || {
+            while !vm_ref.done() {
+                tree.tick(vm_ref);
+                thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        // Updater loop
+        let start = Instant::now();
+        loop {
+            *vm.0.write().unwrap() = start.elapsed().as_secs_f32();
+            if vm.done() {
+                break;
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
-    }
+
+        render_thread.join().unwrap();
+    });
 }

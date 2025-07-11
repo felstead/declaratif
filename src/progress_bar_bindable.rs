@@ -129,7 +129,7 @@ impl ProgressBarWrapper {
     }
 }
 
-type ProgressBarUpdater<V> = Box<dyn Fn(&V) -> DisplayState<ProgressBarState>>;
+type ProgressBarUpdater<V> = Box<dyn Fn(&V) -> DisplayState<ProgressBarState> + Send>;
 pub struct ProgressBarBindable<V> {
     progress_bar: ProgressBarWrapper,
     base_style: ProgressStyle,
@@ -178,7 +178,10 @@ impl<V> ProgressBarBindable<V> {
         }
     }
 
-    pub fn bind_message(mut self, updater: impl Fn(&V) -> DisplayState<String> + 'static) -> Self {
+    pub fn bind_message(
+        mut self,
+        updater: impl Fn(&V) -> DisplayState<String> + 'static + Send,
+    ) -> Self {
         self.updater = Some(Box::new(move |v| {
             let msg = updater(v);
             msg.map(|msg| ProgressBarState {
@@ -192,7 +195,7 @@ impl<V> ProgressBarBindable<V> {
 
     pub fn bind_progress(
         mut self,
-        updater: impl Fn(&V) -> DisplayState<ProgressBarState> + 'static,
+        updater: impl Fn(&V) -> DisplayState<ProgressBarState> + 'static + Send,
     ) -> Self {
         self.updater = Some(Box::new(updater));
         self
@@ -200,7 +203,7 @@ impl<V> ProgressBarBindable<V> {
 
     pub fn bind_display_state(
         mut self,
-        updater: impl Fn(&V) -> DisplayState<()> + 'static,
+        updater: impl Fn(&V) -> DisplayState<()> + 'static + Send,
     ) -> Self {
         self.updater = Some(Box::new(move |v| {
             let state = updater(v);

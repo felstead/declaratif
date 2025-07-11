@@ -4,11 +4,11 @@ use crate::{
 };
 use indicatif::MultiProgress;
 
-pub struct ProgressBarTree<V> {
+pub struct ProgressBarTree<V: Send + Sync> {
     root: ProgressBarTreeContainer<V>,
 }
 
-impl<V> ProgressBarTree<V> {
+impl<V: Send + Sync> ProgressBarTree<V> {
     pub fn new(
         multiprogress: MultiProgress,
         mut children: Vec<ProgressBarTreeContainer<V>>,
@@ -30,8 +30,8 @@ impl<V> ProgressBarTree<V> {
     }
 }
 
-type DisplayCondition<V> = Box<dyn Fn(&V) -> bool + 'static>;
-pub enum ProgressBarTreeContainer<V> {
+type DisplayCondition<V> = Box<dyn Fn(&V) -> bool + 'static + Send>;
+pub enum ProgressBarTreeContainer<V: Send + Sync> {
     // Boxing since ProgressBarBindable is 400 bytes
     Leaf(Box<ProgressBarBindable<V>>, Option<DisplayCondition<V>>),
     Node(
@@ -40,25 +40,25 @@ pub enum ProgressBarTreeContainer<V> {
     ),
 }
 
-impl<V> From<ProgressBarBindable<V>> for ProgressBarTreeContainer<V> {
+impl<V: Send + Sync> From<ProgressBarBindable<V>> for ProgressBarTreeContainer<V> {
     fn from(bar: ProgressBarBindable<V>) -> Self {
         ProgressBarTreeContainer::Leaf(Box::new(bar), None)
     }
 }
 
-impl<V> From<Vec<ProgressBarBindable<V>>> for ProgressBarTreeContainer<V> {
+impl<V: Send + Sync> From<Vec<ProgressBarBindable<V>>> for ProgressBarTreeContainer<V> {
     fn from(children: Vec<ProgressBarBindable<V>>) -> Self {
         group(children.into_iter().map(|bar| bar.into()).collect())
     }
 }
 
-impl<V> From<Vec<ProgressBarTreeContainer<V>>> for ProgressBarTreeContainer<V> {
+impl<V: Send + Sync> From<Vec<ProgressBarTreeContainer<V>>> for ProgressBarTreeContainer<V> {
     fn from(value: Vec<ProgressBarTreeContainer<V>>) -> Self {
         group(value)
     }
 }
 
-impl<V> ProgressBarTreeContainer<V> {
+impl<V: Send + Sync> ProgressBarTreeContainer<V> {
     pub fn with_display_condition(self, condition: DisplayCondition<V>) -> Self {
         match self {
             ProgressBarTreeContainer::Leaf(bar, _) => {
