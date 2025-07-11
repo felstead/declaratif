@@ -288,6 +288,9 @@ impl<V> ProgressBarBindable<V> {
 
                     progress_bar.tick();
                     if progress_state.is_finished() {
+                        if let Some(finish_style) = &self.finish_style {
+                            progress_bar.set_style(finish_style.clone());
+                        }
                         progress_bar.finish();
                     }
                 }
