@@ -236,6 +236,11 @@ impl<V> ProgressBarBindable<V> {
         self
     }
 
+    pub fn with_tick_chars(mut self, chars: &str) -> Self {
+        self.base_style = self.base_style.tick_chars(chars);
+        self
+    }
+
     // Used by the MultiProgressWrapper to insert the bar
     pub(crate) fn reparent(&mut self, multiprogress: MultiProgressWrapper, index: usize) {
         self.progress_bar = ProgressBarWrapper::MultiProgress(multiprogress, index);

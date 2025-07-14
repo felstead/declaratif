@@ -29,13 +29,25 @@ pub mod unbound {
         ProgressBarBindable::new(style)
     }
 
+    pub fn spinner<V: Send + Sync>(
+        updater: impl Fn(&V) -> DisplayState<String> + 'static + Send,
+    ) -> ProgressBarBindable<V> {
+        ProgressBarBindable::new(ProgressStyle::default_spinner()).bind_message(updater)
+    }
+
+    pub fn spinner_post<V: Send + Sync>(
+        updater: impl Fn(&V) -> DisplayState<String> + 'static + Send,
+    ) -> ProgressBarBindable<V> {
+        ProgressBarBindable::new(ProgressStyle::with_template("{msg} {spinner}").unwrap())
+            .bind_message(updater)
+    }
+
     pub fn spacer<V: Send + Sync>() -> ProgressBarBindable<V> {
         message_static(" ".to_string())
     }
 
     pub fn message_static<V: Send + Sync>(message: impl Into<String>) -> ProgressBarBindable<V> {
         let style = ProgressStyle::with_template("{msg}").unwrap();
-
         ProgressBarBindable::new(style).with_static_message(message.into())
     }
 
