@@ -221,8 +221,8 @@ impl<V> ProgressBarBindable<V> {
         self
     }
 
-    pub fn with_static_prefix(mut self, prefix: String) -> Self {
-        self.static_prefix = Some(prefix);
+    pub fn with_static_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.static_prefix = Some(prefix.into());
         self
     }
 
@@ -238,6 +238,10 @@ impl<V> ProgressBarBindable<V> {
 
     pub fn with_tick_chars(mut self, chars: &str) -> Self {
         self.base_style = self.base_style.tick_chars(chars);
+
+        if let Some(finish_style) = self.finish_style.take() {
+            self.finish_style = Some(finish_style.tick_chars(chars));
+        }
         self
     }
 
